@@ -1,4 +1,4 @@
-# FlexOCR
+# VistaOCR
 ISI's Optical Character Recognition (OCR) software for machine-print and handwriting data
 
 # Publications
@@ -10,7 +10,7 @@ ISI's Optical Character Recognition (OCR) software for machine-print and handwri
 
 # Model
 
-![FlexOCR Model Diagram](https://github.com/isi-vista/FlexOCR/blob/master/flex-ocr-model-diagram.png)
+![VistaOCR Model Diagram](https://github.com/isi-vista/VistaOCR/blob/master/vista-ocr-model-diagram.png)
 
 # Pretrained Models
 
@@ -30,7 +30,7 @@ Coming soon.
 
 # Citation
 ```
-@inproceedings{flexocr,
+@inproceedings{vistaocr,
   author    = {Stephen Rawls and Huaigu Cao and Senthil Kumar and Prem Natarjan},
   title     = {Combining Convolutional Neural Networks and LSTMs for Segmentation Free OCR},
   booktitle = {Proc. ICDAR},
