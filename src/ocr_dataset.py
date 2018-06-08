@@ -36,7 +36,7 @@ class OcrDataset(Dataset):
             self.init_alphabet()
 
         # Read LMDB image database
-        self.lmdb_env = lmdb.Environment(os.path.join(data_dir, 'line-images.lmdb'), map_size=1e12, readonly=True)
+        self.lmdb_env = lmdb.Environment(os.path.join(data_dir, 'line-images.lmdb'), map_size=1e12, readonly=True, lock=False)
         self.lmdb_txn = self.lmdb_env.begin(buffers=True)
 
         # Divide dataset into classes by width of images images for two purposes:
