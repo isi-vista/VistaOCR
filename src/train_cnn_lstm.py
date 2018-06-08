@@ -1,6 +1,5 @@
 import os
 import torch
-from torch.autograd import Variable
 from torch.utils.data import DataLoader
 import imagetransforms
 
@@ -40,57 +39,56 @@ def test_on_val(val_dataloader, model, criterion):
     model.eval()
 
     logger.info("About to comptue %d val batches" % len(val_dataloader))
-    for input_tensor, target, input_widths, target_widths, metadata in val_dataloader:
-        # In validation set, not doing backprop, so set volatile to True to reduce memory footprint
-        input_tensor = Variable(input_tensor.cuda(async=True), volatile=True)
-        target = Variable(target, volatile=True)
-        target_widths = Variable(target_widths, volatile=True)
-        input_widths = Variable(input_widths, volatile=True)
 
-        model_output, model_output_actual_lengths = model(input_tensor, input_widths)
-        loss = criterion(model_output, target, model_output_actual_lengths, target_widths)
+    # No need for backprop during validation test
+    with torch.no_grad():
+        for input_tensor, target, input_widths, target_widths, metadata in val_dataloader:
+            input_tensor = input_tensor.cuda(async=True)
 
-        hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=True)
+            model_output, model_output_actual_lengths = model(input_tensor, input_widths)
+            loss = criterion(model_output, target, model_output_actual_lengths, target_widths)
 
-        batch_size = input_tensor.size(0)
-        curr_loss = loss.data[0] / batch_size
-        n_samples += 1
-        loss_running_avg += (curr_loss - loss_running_avg) / n_samples
+            hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=True)
 
-        cur_target_offset = 0
-        batch_cer = 0
-        batch_wer = 0
-        target_np = target.data.numpy()
-        ref_transcriptions = []
-        for i in range(len(hyp_transcriptions)):
-            ref_transcription = form_target_transcription(
-                target_np[cur_target_offset:(cur_target_offset + target_widths.data[i])],
-                model.alphabet
-            )
-            ref_transcriptions.append(uxxxx_to_utf8(ref_transcription))
-            cur_target_offset += target_widths.data[i]
-            cer, wer = compute_cer_wer(hyp_transcriptions[i], ref_transcription)
+            batch_size = input_tensor.size(0)
+            curr_loss = loss.data[0] / batch_size
+            n_samples += 1
+            loss_running_avg += (curr_loss - loss_running_avg) / n_samples
 
-            batch_cer += cer
-            batch_wer += wer
-
-        cer_running_avg += (batch_cer / batch_size - cer_running_avg) / n_samples
-        wer_running_avg += (batch_wer / batch_size - wer_running_avg) / n_samples
-
-        # For now let's display one set of transcriptions every test, just to see improvements
-        if display_hyp:
-            logger.info("--------------------")
-            logger.info("Sample hypothesis / reference transcripts")
-            logger.info("Error rate for this batch is:\tNo LM CER: %f\tWER:%f" % (
-            batch_cer / batch_size, batch_wer / batch_size))
-
-            hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=False)
+            cur_target_offset = 0
+            batch_cer = 0
+            batch_wer = 0
+            target_np = target.data.numpy()
+            ref_transcriptions = []
             for i in range(len(hyp_transcriptions)):
-                logger.info("\tHyp[%d]: %s" % (i, hyp_transcriptions[i]))
-                logger.info("\tRef[%d]: %s" % (i, ref_transcriptions[i]))
-                logger.info("")
-            logger.info("--------------------")
-            display_hyp = False
+                ref_transcription = form_target_transcription(
+                    target_np[cur_target_offset:(cur_target_offset + target_widths.data[i])],
+                    model.alphabet
+                )
+                ref_transcriptions.append(uxxxx_to_utf8(ref_transcription))
+                cur_target_offset += target_widths.data[i]
+                cer, wer = compute_cer_wer(hyp_transcriptions[i], ref_transcription)
+
+                batch_cer += cer
+                batch_wer += wer
+
+            cer_running_avg += (batch_cer / batch_size - cer_running_avg) / n_samples
+            wer_running_avg += (batch_wer / batch_size - wer_running_avg) / n_samples
+
+            # For now let's display one set of transcriptions every test, just to see improvements
+            if display_hyp:
+                logger.info("--------------------")
+                logger.info("Sample hypothesis / reference transcripts")
+                logger.info("Error rate for this batch is:\tNo LM CER: %f\tWER:%f" % (
+                batch_cer / batch_size, batch_wer / batch_size))
+
+                hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=False)
+                for i in range(len(hyp_transcriptions)):
+                    logger.info("\tHyp[%d]: %s" % (i, hyp_transcriptions[i]))
+                    logger.info("\tRef[%d]: %s" % (i, ref_transcriptions[i]))
+                    logger.info("")
+                logger.info("--------------------")
+                display_hyp = False
 
     # Finally, put model back in train mode
     model.train()
@@ -101,12 +99,11 @@ def test_on_val(val_dataloader, model, criterion):
 
 def train(batch, model, criterion, optimizer):
     input_tensor, target, input_widths, target_widths, metadata = batch
-    input_tensor = Variable(input_tensor.cuda(async=True))
-    target = Variable(target)
-    target_widths = Variable(target_widths)
-    input_widths = Variable(input_widths)
+    input_tensor = input_tensor.cuda(async=True)
+
     optimizer.zero_grad()
     model_output, model_output_actual_lengths = model(input_tensor, input_widths)
+
     loss = criterion(model_output, target, model_output_actual_lengths, target_widths)
     loss.backward()
     
@@ -116,6 +113,7 @@ def train(batch, model, criterion, optimizer):
         if not param.grad is None:
             param.grad.data.clamp_(min=-5, max=5)
 
+
     # Okay, now we're ready to update parameters!
     optimizer.step()
     return loss.data[0]
@@ -124,7 +122,9 @@ def train(batch, model, criterion, optimizer):
 def get_args():
     parser = argparse.ArgumentParser(description="OCR Training Script")
     parser.add_argument("--batch-size", type=int, default=64, help="SGD mini-batch size")
+    parser.add_argument("--num_in_channels", type=int, default=1, help="Number of input channels for image (1 for grayscale or 3 for color)")
     parser.add_argument("--line-height", type=int, default=30, help="Input image line height")
+    parser.add_argument("--rds-line-height", type=int, default=30, help="Target line height after rapid-downsample layer")
     parser.add_argument("--datadir", type=str, required=True, help="specify the location to data.")
     parser.add_argument("--snapshot-prefix", type=str, required=True,
                         help="Output directory and basename prefix for output model snapshots")
@@ -139,6 +139,8 @@ def get_args():
     parser.add_argument("--snapshot-num-iterations", type=int, default=2000, help="Every N iterations snapshot model")
     parser.add_argument("--patience", type=int, default=10, help="Patience parameter for ReduceLROnPlateau.")
     parser.add_argument("--min-lr", type=float, default=1e-7, help="Minimum learning rate for ReduceLROnPlateau")
+    parser.add_argument("--rtl", default=False, action='store_true', help="Set if language is right-to-left")
+    parser.add_argument("--synth_input", default=False, action='store_true', help="Specifies if input data is synthetic; if so we apply extra data augmentation")
     return parser.parse_args()
 
 
@@ -150,11 +152,29 @@ def main():
     best_model_path = args.snapshot_prefix + "-best_model.pth"
 
 
-    line_img_transforms = imagetransforms.Compose([
-        imagetransforms.Scale(new_h=args.line_height),
-        imagetransforms.InvertBlackWhite(),
-        imagetransforms.ToTensor(),
-    ])
+    line_img_transforms = []
+
+    # Data augmentations (during training only)
+    if args.synth_input:
+        line_img_transforms.append( imagetransforms.DegradeDownsample(ds_factor=0.2) )
+
+
+    # Make sure to do resize after degrade step above
+    line_img_transforms.append(imagetransforms.Scale(new_h=args.line_height))
+
+    # Only do for grayscale
+    if args.num_in_channels == 1:
+        line_img_transforms.append(imagetransforms.InvertBlackWhite())
+
+    # For right-to-left languages
+    if args.rtl:
+        print("Right to Left")
+        line_img_transforms.append(imagetransforms.HorizontalFlip())
+
+
+    line_img_transforms.append(imagetransforms.ToTensor())
+
+    line_img_transforms = imagetransforms.Compose(line_img_transforms)
 
 
     # Setup cudnn benchmarks for faster code
@@ -178,8 +198,9 @@ def main():
         model = CnnOcrModel.FromSavedWeights(args.load_from_snapshot)
     else:
         model = CnnOcrModel(
-            num_in_channels=1, 
+            num_in_channels=args.num_in_channels,
             input_line_height=args.line_height,
+            rds_line_height=args.rds_line_height,
             lstm_input_dim=args.lstm_input_dim,
             num_lstm_layers=args.num_lstm_layers,
             num_lstm_hidden_units=args.num_lstm_units,
@@ -249,6 +270,7 @@ def main():
                             'state_dict': model.state_dict(),
                             'optimizer': optimizer.state_dict(),
                             'model_hyper_params': model.get_hyper_params(),
+                            'rtl': args.rtl,
                             'cur_lr': lr_alpha,
                             'val_loss': val_loss,
                             'val_cer': val_cer,

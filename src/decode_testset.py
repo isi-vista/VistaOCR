@@ -37,12 +37,19 @@ def main():
     model = CnnOcrModel.FromSavedWeights(args.model_path)
     model.eval()
 
-    line_img_transforms = imagetransforms.Compose([
-        imagetransforms.Scale(new_h=model.input_line_height),
-        imagetransforms.InvertBlackWhite(),
-        imagetransforms.ToTensor(),
-    ])
+    line_img_transforms = [imagetransforms.Scale(new_h=model.input_line_height)]
 
+    # Only do for grayscale
+    if model.num_in_channels == 1:
+        line_img_transforms.append(imagetransforms.InvertBlackWhite())
+
+    # For right-to-left languages
+    if model.rtl:
+        line_img_transforms.append(imagetransforms.HorizontalFlip())
+
+    line_img_transforms.append(imagetransforms.ToTensor())
+
+    line_img_transforms = imagetransforms.Compose(line_img_transforms)
 
     have_lm = (args.lm_path is not None) and (args.lm_path != "")
 
@@ -74,51 +81,35 @@ def main():
 
     hyp_output = []
     hyp_lm_output = []
-    ref_output = []
-
 
     print("About to process test set. Total # iterations is %d." % len(test_dataloader))
 
-    for idx, (input_tensor, target, input_widths, target_widths, metadata) in enumerate(test_dataloader):
-        sys.stdout.write(".")
-        sys.stdout.flush()
+    # No need for backprop during validation test
+    with torch.no_grad():
+        for idx, (input_tensor, target, input_widths, target_widths, metadata) in enumerate(test_dataloader):
+            sys.stdout.write(".")
+            sys.stdout.flush()
 
-        # Wrap inputs in PyTorch Variable class
-        input_tensor = Variable(input_tensor.cuda(async=True), volatile=True)
-        target = Variable(target, volatile=True)
-        target_widths = Variable(target_widths, volatile=True)
-        input_widths = Variable(input_widths, volatile=True)
+            # Wrap inputs in PyTorch Variable class
+            input_tensor = input_tensor.cuda(async=True)
 
-        # Call model
-        model_output, model_output_actual_lengths = model(input_tensor, input_widths)
+            # Call model
+            model_output, model_output_actual_lengths = model(input_tensor, input_widths)
 
-        # Do LM-free decoding
-        hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=True)
+            # Do LM-free decoding
+            hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=True)
 
-        # Optionally, do LM decoding
-        if have_lm:
-            hyp_transcriptions_lm = model.decode_with_lm(model_output, model_output_actual_lengths, uxxxx=True)
-
-
-
-        cur_target_offset = 0
-        target_np = target.data.numpy()
-
-        for i in range(len(hyp_transcriptions)):
-            ref_transcription = form_target_transcription(
-                target_np[cur_target_offset:(cur_target_offset + target_widths.data[i])], model.alphabet)
-            cur_target_offset += target_widths.data[i]
-
-            hyp_output.append((metadata['utt-ids'][i], hyp_transcriptions[i]))
-
+            # Optionally, do LM decoding
             if have_lm:
-                hyp_lm_output.append((metadata['utt-ids'][i], hyp_transcriptions_lm[i]))
+                hyp_transcriptions_lm = model.decode_with_lm(model_output, model_output_actual_lengths, uxxxx=True)
 
-            ref_output.append((metadata['utt-ids'][i], ref_transcription))
+            for i in range(len(hyp_transcriptions)):
+                hyp_output.append((metadata['utt-ids'][i], hyp_transcriptions[i]))
 
+                if have_lm:
+                    hyp_lm_output.append((metadata['utt-ids'][i], hyp_transcriptions_lm[i]))
 
     hyp_out_file = os.path.join(args.outdir, "hyp-chars.txt")
-    ref_out_file = os.path.join(args.outdir, "ref-chars.txt")
 
     if have_lm:
         hyp_lm_out_file = os.path.join(args.outdir, "hyp-lm-chars.txt")
@@ -130,8 +121,6 @@ def main():
     if have_lm:
         print("\t%s" % hyp_lm_out_file)
 
-    print("\t%s" % ref_out_file)
-
     with open(hyp_out_file, 'w') as fh:
         for uttid, hyp in hyp_output:
             fh.write("%s (%s)\n" % (hyp, uttid))
@@ -141,10 +130,6 @@ def main():
         with open(hyp_lm_out_file, 'w') as fh:
             for uttid, hyp in hyp_lm_output:
                 fh.write("%s (%s)\n" % (hyp, uttid))
-
-    with open(ref_out_file, 'w') as fh:
-        for uttid, ref in ref_output:
-            fh.write("%s (%s)\n" % (ref, uttid))
 
 
 if __name__ == "__main__":

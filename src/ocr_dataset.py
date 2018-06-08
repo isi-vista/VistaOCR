@@ -17,6 +17,8 @@ class OcrDataset(Dataset):
     def __init__(self, data_dir, split, transforms, alphabet=None):
         logger.info("Loading OCR Dataset: [%s] split from [%s]." % (split, data_dir))
 
+        self.max_allowed_width = 900
+
         self.data_dir = data_dir
         self.split = split
         self.preprocess = transforms
@@ -79,10 +81,16 @@ class OcrDataset(Dataset):
                 else:
                     raise Exception("Json entry must list width & height of image.")
 
-                if normalized_width < cur_limit:
+                if normalized_width < cur_limit and normalized_width < self.max_allowed_width and normalized_width > 20:
                     self.size_groups[cur_limit].append(idx)
                     self.size_groups_dict[cur_limit][idx] = 1
                     break
+
+
+        # Now get final size (might have dropped large entries!)
+        self.nentries = 0
+        for cur_limit in self.size_group_limits:
+            self.nentries += len(self.size_groups[cur_limit])
 
         logger.info("Done.")
 
@@ -170,4 +178,5 @@ class OcrDataset(Dataset):
         return line_image_padded, transcription, metadata
 
     def __len__(self):
-        return len(self.data_desc[self.split])
+        return self.nentries
+

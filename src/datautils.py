@@ -1,7 +1,7 @@
 import torch
+from torch.utils.data.sampler import Sampler
 
-
-class GroupedSampler():
+class GroupedSampler(Sampler):
     """Dataset is divided into sub-groups, G_1, G_2, ..., G_k
        Samples Randomly in G_1, then moves on to sample randomly into G_2, etc all the way to G_k
 
@@ -98,7 +98,7 @@ def SortByWidthCollater_helper(batch, seq2seq):
             for j, char in enumerate(transcript):
                 target_transcription[idx][j] = char
     else:
-        target_transcription = torch.IntTensor(target_transcription_widths.sum())
+        target_transcription = torch.IntTensor(target_transcription_widths.sum().item())
         cur_offset = 0
         for idx, (tensor, transcript, metadata) in enumerate(batch):
             for j, char in enumerate(transcript):

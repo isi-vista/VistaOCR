@@ -99,16 +99,31 @@ class UniformNoise(object):
     def __call__(self, img):
         mask = torch.Tensor(img.shape[0],img.shape[1]).fill_(self.p)
         mask = torch.bernoulli(mask).numpy()
-        cpy = img.copy()
+        cpy = img.copy().astype(np.int16)
 
         noise_mean = 0
-        noise_std = torch.Tensor(img.shape[0],img.shape[1]).fill_(self.noise_std_)
-        noise = torch.normal(noise_mean, noise_std).numpy().astype(np.uint8)
+        if len(img.shape) == 3:
+            noise_std = torch.Tensor(img.shape[0],img.shape[1], img.shape[2]).fill_(self.noise_std_)
+        else:
+            noise_std = torch.Tensor(img.shape[0],img.shape[1]).fill_(self.noise_std_)
+        noise = torch.normal(noise_mean, noise_std).numpy().astype(np.int8)
 
         cpy[ mask == 1 ] += noise[ mask == 1 ]
         cpy = np.clip(cpy, a_min=0, a_max=255)
+        cpy = cpy.astype(np.uint8)
 
         return cpy
+
+
+class DegradeDownsample(object):
+    def __init__(self, ds_factor):
+        self.ds_factor = ds_factor
+
+    def __call__(self, img):
+        orig_size = (img.shape[1], img.shape[0])
+        downsampled_img = cv2.resize(img, dsize=(0,0), fx=self.ds_factor, fy=self.ds_factor)
+        return cv2.resize(downsampled_img, dsize=orig_size)
+
 
 class UniformDelete(object):
     def __init__(self, p_apply):
@@ -451,6 +466,12 @@ class RandomHorizontalFlip(object):
             #return img.transpose(Image.FLIP_LEFT_RIGHT)
         return img
 
+class HorizontalFlip(object):
+    """Randomly horizontally flips the given opencv image with a probability of 0.5
+    """
+
+    def __call__(self, img):
+        return cv2.flip(img, flipCode=1)
 
 class RandomSizedCrop(object):
     """Random crop the given opencv image to a random size of (0.08 to 1.0) of the original size

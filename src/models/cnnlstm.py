@@ -8,7 +8,6 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
 
 from textutils import uxxxx_to_utf8
 
@@ -56,6 +55,12 @@ class CnnOcrModel(nn.Module):
         # Create model with right hyperparametrs
         model = cls(**hp)
 
+        if 'rtl' in weights:
+            model.rtl = weights['rtl']
+        else:
+            # Default to RTL temporarily
+            model.rtl = True
+
         # Now load weights from previously trained model
         model.load_state_dict(weights['state_dict'], strict=False)
 
@@ -70,8 +75,8 @@ class CnnOcrModel(nn.Module):
         self.hyper_params = kwargs.copy()
 
         self.input_line_height = kwargs['input_line_height']
+        self.rds_line_height = kwargs['rds_line_height']
         self.alphabet = kwargs['alphabet']
-
         self.lstm_input_dim = kwargs['lstm_input_dim']
         self.num_lstm_layers = kwargs['num_lstm_layers']
         self.num_lstm_hidden_units = kwargs['num_lstm_hidden_units']
@@ -82,24 +87,38 @@ class CnnOcrModel(nn.Module):
         self.multigpu = kwargs.get('multigpu', True)
         self.verbose = kwargs.get('verbose', True)
 
-        self.LSTMList = None
         self.lattice_decoder = None
 
-        self.rapid_ds = nn.Sequential(
-            nn.Conv2d(self.num_in_channels, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, stride=2),
-            nn.Conv2d(16, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, stride=2),
-            nn.Conv2d(16, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, stride=2),
-        )
+        # Sanity checks
+        if self.rds_line_height > self.input_line_height:
+            raise Exception("rapid-downsample line height must be less than or equal to input line height")
+        if self.input_line_height % self.rds_line_height != 0:
+            raise Exception("rapid-downsample line height must evenly divide input line height by a power of 2")
+
+        num_rds_pooling_layers = 0
+        lh = self.input_line_height
+        while lh > self.rds_line_height:
+            num_rds_pooling_layers += 1
+
+            if lh % 2 != 0:
+                raise Exception("rapid-downsample line height must eenly diide input line height by a power of 2")
+            lh /= 2
+
+        if lh != self.rds_line_height:
+            raise Exception("rapid-downsample line height must eenly diide input line height by a power of 2")
+
+        self.rapid_ds = nn.Sequential()
+
+        last_num_filters = self.num_in_channels
+        for i in range(num_rds_pooling_layers):
+            self.rapid_ds.add_module("%02d-conv"%i,nn.Conv2d(last_num_filters, 16, kernel_size=3, padding=1))
+            self.rapid_ds.add_module("%02d-relu"%i,nn.ReLU(inplace=True))
+            self.rapid_ds.add_module("%02d-pool"%i,nn.MaxPool2d(2, stride=2))
+            last_num_filters = 16
 
 
         self.cnn = nn.Sequential(
-            *self.ConvBNReLU(16, 64),
+            *self.ConvBNReLU(last_num_filters, 64),
             *self.ConvBNReLU(64, 64),
             nn.FractionalMaxPool2d(2, output_ratio=(0.5, 0.7)),
             *self.ConvBNReLU(64, 128),
@@ -133,7 +152,7 @@ class CnnOcrModel(nn.Module):
 
         # Finally, let's initialize parameters
         for param in self.parameters():
-            torch.nn.init.uniform(param, -0.08, 0.08)
+            torch.nn.init.uniform_(param, -0.08, 0.08)
 
         total_params = 0
         for param in self.parameters():
@@ -207,13 +226,20 @@ class CnnOcrModel(nn.Module):
             out_h = math.floor((out_h + 2.0 * padding_y - dilation_y * (kernel_size_y - 1) - 1) / stride_y + 1)
             out_w = math.floor((out_w + 2.0 * padding_x - dilation_x * (kernel_size_x - 1) - 1) / stride_x + 1)
         elif isinstance(module, nn.FractionalMaxPool2d):
-            if module.outh is not None:
-                #out_h, out_w = module.output_size
-                out_h, out_w = module.outh, module.outw
+            if module.output_size is not None:
+                out_h, out_w = module.output_size
             else:
-                #rh, rw = module.output_ratio
-                rh, rw = module.rh, module.rw
+                rh, rw = module.output_ratio
                 out_h, out_w = math.floor(out_h * rh), math.floor(out_w * rw)
+
+
+#            if module.outh is not None:
+#                #out_h, out_w = module.output_size
+#                out_h, out_w = module.outh, module.outw
+#            else:
+#                #rh, rw = module.output_ratio
+#                rh, rw = module.rh, module.rw
+#                out_h, out_w = math.floor(out_h * rh), math.floor(out_w * rw)
 
         return out_h, out_w
 
@@ -263,7 +289,7 @@ class CnnOcrModel(nn.Module):
 
         prob_output = self.prob_layer(lstm_output.view(-1, lstm_output.size(2))).view(w, b, -1)
 
-        return prob_output, Variable(torch.IntTensor(lstm_output_lengths))
+        return prob_output, lstm_output_lengths.to(torch.int32)
 
     def init_lm(self, lm_file, word_sym_file, lm_units, acoustic_weight=0.8, max_active=5000, beam=16.0, lattice_beam=10.0):
         # Only pull in if needed
@@ -291,9 +317,6 @@ class CnnOcrModel(nn.Module):
 
         T = model_output.size()[0]
         B = model_output.size()[1]
-
-        if isinstance(batch_actual_timesteps, Variable):
-            batch_actual_timesteps = batch_actual_timesteps.data
 
         # Actual model output is not set to probability vector yet, need to run softmax
         probs = torch.nn.functional.log_softmax(model_output.view(-1, model_output.size(2)), dim=1).view(model_output.size(0),
@@ -361,9 +384,6 @@ class CnnOcrModel(nn.Module):
 
         T = model_output.size()[0]
         B = model_output.size()[1]
-
-        if isinstance(batch_actual_timesteps, Variable):
-            batch_actual_timesteps = batch_actual_timesteps.data
 
         prev_char = ['' for _ in range(B)]
         result = ['' for _ in range(B)]
