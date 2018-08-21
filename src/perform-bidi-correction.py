@@ -402,7 +402,7 @@ def undo_bidi(uxxxx_str, base_level=1):
 
 
 def main():
-    with open('/lfs2/srawls/madcat-desc-backup.json', 'r') as fh:
+    with open('/exp/scale18/ocr/users/srawls/synth_farsi/desc.json', 'r') as fh:
         data = json.load(fh)
 
     for mode in ['train', 'test', 'validation']:
@@ -411,7 +411,7 @@ def main():
         for entry in data[mode]:
             entry['trans'] = undo_bidi(entry['trans'])
 
-    with open('/lfs2/srawls/madcat/desc.json', 'w') as fh:
+    with open('/exp/scale18/ocr/users/srawls/synth_farsi/desc-bidi-corrected.json', 'w') as fh:
         json.dump(data, fh)
 
 

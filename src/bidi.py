@@ -72,7 +72,8 @@ X2_X5_MAPPINGS = {
 
 # Added 'B' so X6 won't execute in that case and X8 will run it's course
 X6_IGNORED = list(X2_X5_MAPPINGS.keys()) + ['BN', 'PDF', 'B']
-X9_REMOVED = list(X2_X5_MAPPINGS.keys()) + ['BN', 'PDF']
+#X9_REMOVED = list(X2_X5_MAPPINGS.keys()) + ['BN', 'PDF']
+X9_REMOVED = list(X2_X5_MAPPINGS.keys()) + ['PDF']
 
 
 def undo_bidi(uxxxx_str, base_level=1):
@@ -158,6 +159,11 @@ def undo_bidi(uxxxx_str, base_level=1):
         return ['L', 'R'][max(b_l, b_r) % 2]
 
     runs = []
+
+    # After remoing RLO/LRO/etc, check length again
+    if len(augmented_char_array) == 0:
+        return ''
+
     first_char = augmented_char_array[0]
     run_start_level = calc_level_run(first_char['level'], base_level)
     run_end_level = None
@@ -323,7 +329,7 @@ def undo_bidi(uxxxx_str, base_level=1):
         for _ch in chars:
             # only those types are allowed at this stage
             assert _ch['bidi-type'] in ('L', 'R', 'EN', 'AN'), \
-                '%s not allowed here' % _ch['bidi-type']
+                '[%s] not allowed here. Original string was: [%s]; Cur run = [%s] and cur char = [%s].' % (_ch['bidi-type'], uxxxx_str, str(chars), _ch)
 
             if _embedding_direction(_ch['level']) == 'L':
                 # I1. For all characters with an even (left-to-right) embedding

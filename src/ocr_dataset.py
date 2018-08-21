@@ -14,10 +14,10 @@ from alphabet import Alphabet
 
 
 class OcrDataset(Dataset):
-    def __init__(self, data_dir, split, transforms, alphabet=None):
+    def __init__(self, data_dir, split, transforms, alphabet=None, preloaded_lmdb=None, max_allowed_width=1200):
         logger.info("Loading OCR Dataset: [%s] split from [%s]." % (split, data_dir))
 
-        self.max_allowed_width = 900
+        self.max_allowed_width = max_allowed_width
 
         self.data_dir = data_dir
         self.split = split
@@ -36,7 +36,11 @@ class OcrDataset(Dataset):
             self.init_alphabet()
 
         # Read LMDB image database
-        self.lmdb_env = lmdb.Environment(os.path.join(data_dir, 'line-images.lmdb'), map_size=1e12, readonly=True, lock=False)
+        if preloaded_lmdb:
+            self.lmdb_env = preloaded_lmdb
+        else:
+            self.lmdb_env = lmdb.Environment(os.path.join(data_dir, 'line-images.lmdb'), map_size=1e12, readonly=True, lock=False)
+
         self.lmdb_txn = self.lmdb_env.begin(buffers=True)
 
         # Divide dataset into classes by width of images images for two purposes:
@@ -48,10 +52,12 @@ class OcrDataset(Dataset):
 
         # TODO:  write determine_width_cutoffs() to determine best answer automatically
         #        For now just hard-code some heuristic approach
-        if len(self.data_desc['train']) < 10000:
-            self.size_group_limits = [400, 600, np.inf]
-        else:
-            self.size_group_limits = [150, 200, 300, 350, 450, 600, np.inf]
+        #if len(self.data_desc['train']) < 10000:
+        #    self.size_group_limits = [400, 600, np.inf]
+        #else:
+        #    self.size_group_limits = [150, 200, 300, 350, 450, 600, np.inf]
+
+        self.size_group_limits = [150, 200, 300, 350, 450, 600, np.inf]
 
 
         self.size_group_keys = self.size_group_limits
@@ -81,7 +87,7 @@ class OcrDataset(Dataset):
                 else:
                     raise Exception("Json entry must list width & height of image.")
 
-                if normalized_width < cur_limit and normalized_width < self.max_allowed_width and normalized_width > 20:
+                if normalized_width < cur_limit and normalized_width < self.max_allowed_width:
                     self.size_groups[cur_limit].append(idx)
                     self.size_groups_dict[cur_limit][idx] = 1
                     break
@@ -89,8 +95,14 @@ class OcrDataset(Dataset):
 
         # Now get final size (might have dropped large entries!)
         self.nentries = 0
+        self.max_index = 0
         for cur_limit in self.size_group_limits:
             self.nentries += len(self.size_groups[cur_limit])
+
+            if len(self.size_groups[cur_limit]) > 0:
+                cur_max = max(self.size_groups[cur_limit])
+                if cur_max > self.max_index:
+                    self.max_index = cur_max
 
         logger.info("Done.")
 
@@ -148,7 +160,26 @@ class OcrDataset(Dataset):
 
         img_bytes = np.asarray(self.lmdb_txn.get(entry['id'].encode('ascii')), dtype=np.uint8)
         line_image = cv2.imdecode(img_bytes, -1)
+
+#        # HACK for now to flip right-to-left
+#        if 'farsi' in self.data_dir or 'arabic' in self.data_dir:
+#            line_image = cv2.flip(line_image, flipCode=1)
+
+        # Do a check for RGBA images; if found get rid of alpha channel
+        if len(line_image.shape) == 3 and line_image.shape[2] == 4:
+            line_image = cv2.cvtColor(line_image, cv2.COLOR_BGRA2BGR)
+
+        if line_image.shape[0] == 0 or line_image.shape[1] == 0:
+            print("ERROR, line image is 0 area; id = %s; idx = %d" % (entry['id'], index) )
+
         line_image = self.preprocess(line_image)
+
+        # Sanity check: make sure width@30px lh is long enough not to crash our model; we pad to at least 15px wide
+        # Need to do this and change the "real" image size so that pack_padded doens't complain
+        if line_image.size(2) < 15:
+            line_image_ = torch.ones(line_image.size(0), line_image.size(1), 15)
+            line_image_[:,:,:line_image.size(2)] = line_image
+            line_image = line_image_
 
         # Add padding up to max-width, so that we have consistent size for cudnn.benchmark to work with
         original_width = line_image.size(2)
@@ -163,7 +194,7 @@ class OcrDataset(Dataset):
             line_image_padded = line_image
 
         transcription = []
-        for char in entry['trans'].split(" "):
+        for char in entry['trans'].split():
             transcription.append(self.alphabet.char_to_idx[char])
 
         metadata = {

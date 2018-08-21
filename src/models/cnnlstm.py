@@ -5,6 +5,9 @@ import os
 import sys
 from datetime import datetime
 
+from concurrent.futures import ThreadPoolExecutor
+
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -36,7 +39,7 @@ class CnnOcrModel(nn.Module):
 
     @classmethod
     def FromSavedWeights(cls, weight_file, verbose=True, gpu=None):
-        weights = torch.load(weight_file)
+        weights = torch.load(weight_file, map_location=lambda storage, loc: storage)
 
         if verbose:
             logger.info("Loading model from: %s" % weight_file)
@@ -62,7 +65,8 @@ class CnnOcrModel(nn.Module):
             model.rtl = True
 
         # Now load weights from previously trained model
-        model.load_state_dict(weights['state_dict'], strict=False)
+        #model.load_state_dict(weights['state_dict'], strict=False)
+        model.load_state_dict(weights['state_dict'], strict=True)
 
         return model
 
@@ -192,7 +196,7 @@ class CnnOcrModel(nn.Module):
             self.prob_layer = self.prob_layer.cuda()
 
             if self.multigpu:
-                self.cnn = torch.nn.DataParallel(self.cnn)
+               self.cnn = torch.nn.DataParallel(self.cnn)
         else:
             logger.info("Warning: Runnig model on CPU")
 
@@ -294,10 +298,12 @@ class CnnOcrModel(nn.Module):
     def init_lm(self, lm_file, word_sym_file, lm_units, acoustic_weight=0.8, max_active=5000, beam=16.0, lattice_beam=10.0):
         # Only pull in if needed
         script_path = os.path.dirname(os.path.realpath(__file__))
-        sys.path.append(script_path + "/../eesen")
+        #sys.path.append(script_path + "/../eesen")
+        sys.path.insert(0,'/home/hltcoe/srawls/pyeesen')
         import eesen
+        print("Loading eesen from: %s" % eesen.__file__)
         self.acoustic_weight = acoustic_weight
-        self.lattice_decoder = eesen.LatticeDecoder(lm_file, word_sym_file, 1, max_active, beam,
+        self.lattice_decoder = eesen.LatticeDecoder(lm_file, word_sym_file, self.acoustic_weight, max_active, beam,
                                                     lattice_beam)
 
         # Need to keep track of model-alphabet to LM-alphabet conversion
@@ -307,8 +313,98 @@ class CnnOcrModel(nn.Module):
                 units.append(line.strip().split(' ')[0])
 
         self.lmidx_to_char = units
-
+        self.lmchar_to_idx = dict(zip(units, range(len(units))))
         
+
+        # Let's precompute some stuff to make lm faster
+        print("Prep work...")
+        self.lm_swap_idxs = []
+        self.lm_swap_idxs_modelidx = []
+        self.lm_swap_idxs_lmidx = []
+        self.add_to_blank_char = []
+        self.add_to_blank_idx = []
+        for model_idx in range(len(self.alphabet.idx_to_char)):
+            char = self.alphabet.idx_to_char[model_idx]
+            if not char in self.lmchar_to_idx:
+                self.add_to_blank_char.append(char)
+                self.add_to_blank_idx.append(model_idx)
+                continue
+            lm_idx = self.lmchar_to_idx[char]
+            self.lm_swap_idxs.append( (model_idx,lm_idx) )
+            self.lm_swap_idxs_modelidx.append(model_idx)
+            self.lm_swap_idxs_lmidx.append(lm_idx)
+        print("Done prep work")
+        print("\tFYI: these chars were in model but not in LM:  %s" % str(self.add_to_blank_char))
+
+
+
+    def decode_with_lm_mt(self, model_output, batch_actual_timesteps, uxxxx=False, n_workers=10):
+        # Setup multi-threaded decoding
+
+        #print("About to create threadpool")
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+
+            if self.lattice_decoder is None:
+                raise Exception("Must initialize lattice decoder prior to LM decoding")
+
+            T = model_output.size()[0]
+            B = model_output.size()[1]
+
+            # Actual model output is not set to probability vector yet, need to run softmax
+            probs = torch.nn.functional.log_softmax(model_output.view(-1, model_output.size(2)), dim=1).view(model_output.size(0),
+                                                                                                      model_output.size(1),
+                                                                                                      -1)
+
+            # Need to take care of issue where prob goes to a char in model-alphabet but not in lm-alphabet
+            # Just assign high prob to ctc-blank?
+            #print("Sum of missing chars' prob = %s" % str(model_output[:,:,self.add_to_blank_idx].sum(dim=2)))
+            #probs[:,:,0] += probs[:,:,self.add_to_blank_idx].sum(dim=2)
+            #probs[:,:,self.add_to_blank_idx] = 0
+
+            # Make sure we're on CPU
+            probs = probs.data.cpu()
+
+            # We process decoder parallely in worker threads; store those async futures here
+            decoder_futures = [None]*B
+
+            # probs = probs * self.acoustic_weight
+            start_submitting = datetime.now()
+            for b in range(B):
+                probs_remapped = np.full( (batch_actual_timesteps[b], len(self.lmidx_to_char)), np.log(1e-10))
+                probs_remapped[:,self.lm_swap_idxs_lmidx] = probs[:batch_actual_timesteps[b], b, self.lm_swap_idxs_modelidx]
+
+                decoder_futures[b] = executor.submit(self.lattice_decoder.Decode, probs_remapped)
+
+            end_submitting = datetime.now()
+            #print("Waiting for threadpool jobs to finish. Took %f s to get here" % (end_submitting - start_submitting).total_seconds())
+        # At this point all decoder tasks are done (we are outside scope of with ThreadPoolExecutor, so it has finished)
+        end_waiting = datetime.now()
+        #print("Took %f s to wait for batch decodes to finish" % (end_waiting - end_submitting).total_seconds())
+
+        hyp_results = []
+
+        for b in range(B):
+            res = decoder_futures[b].result()
+
+            res_utf8 = ''
+            if uxxxx == False:
+                for uxxxx_word in res.split(' '):
+                    res_utf8 += ''.join([uxxxx_to_utf8(r) for r in uxxxx_word.split('_')])
+                res = res_utf8
+            else:
+                res_flatten = ''
+                for uxxxx_word in res.split(' '):
+                    for uxxxx_char in uxxxx_word.split('_'):
+                        res_flatten += uxxxx_char
+                        res_flatten += ' '
+                res = res_flatten.strip()
+
+            hyp_results.append(res)
+
+        return hyp_results
+
+
+
 
     def decode_with_lm(self, model_output, batch_actual_timesteps, uxxxx=False, pmod=False):
 
@@ -357,6 +453,8 @@ class CnnOcrModel(nn.Module):
                     psum = np.logaddexp(psum, activations_remapped[t, c])
                 if psum < np.log(1e-2):
                     activations_remapped[t, 0] = 0
+
+
 
             res = self.lattice_decoder.Decode(activations_remapped)
             res_utf8 = ''
