@@ -29,7 +29,7 @@ def get_args():
 
     parser.add_argument("--lm-path", type=str, required=False,
                         help="Path to trained language model for LM decoding")
-
+    parser.add_argument("--padding", type=int, default = 0, help="Amount of padding to add to images")
     return parser.parse_args()
 
 
@@ -40,6 +40,8 @@ def main():
     model.eval()
 
     line_img_transforms = imagetransforms.Compose([
+        imagetransforms.Scale(new_h=model.input_line_height),
+        imagetransforms.Pad(args.padding,0),
         imagetransforms.Scale(new_h=model.input_line_height),
         imagetransforms.InvertBlackWhite(),
         imagetransforms.ToTensor(),
@@ -78,8 +80,10 @@ def main():
     ref_output = []
     font_hyp_output = []
     font_ref_output = []
-    unusualfontpath = "/nas/home/jschmidt/unusualfonts.txt"
+    unusualfontpath = "/nas/home/jschmidt/SynthText/data/fonts/unusualfonts.txt"
     unusualfonts = [line.strip().lower() for line in open(unusualfontpath)]
+    print(unusualfonts)
+    #print(unusualfonts)
     print("About to process test set. Total # iterations is %d." % len(test_dataloader))
 
     for idx, (input_tensor, target, input_widths, target_widths, metadata) in enumerate(test_dataloader):
@@ -89,6 +93,8 @@ def main():
         #print("Metadata: ", metadata)
         # Wrap inputs in PyTorch Variable class
         #print("Target:",target)
+        #print(type(input_widths))
+        #input_tensor =torch.nn.functional.pad(input_tensor,p2d,"constant",0) 
         input_tensor = Variable(input_tensor.cuda(async=True), volatile=True)
         target = Variable(target, volatile=True)
         target_widths = Variable(target_widths, volatile=True)
@@ -98,7 +104,7 @@ def main():
         model_output, model_output_actual_lengths = model(input_tensor, input_widths)
         # Do LM-free decoding
         hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=True)
-  
+        
         # Optionally, do LM decoding
         if have_lm:
             hyp_transcriptions_lm = model.decode_with_lm(model_output, model_output_actual_lengths, uxxxx=True)
@@ -110,7 +116,7 @@ def main():
 
         for i in range(len(hyp_transcriptions)):
             ref_transcription = metadata['trans_raw'][i]
-            #print("T:", tu.uxxxx_to_utf8(ref_transcription))
+            print("T:", tu.uxxxx_to_utf8(ref_transcription))
             #ref_transcription = form_target_transcription(
              #  target_np[cur_target_offset:(cur_target_offset + target_widths.data[i])], model.alphabet)
              #   target_np[cur_target_offset:(cur_target_offset + target_widths.data[i])], test_dataset.alphabet)
@@ -118,7 +124,7 @@ def main():
             cur_target_offset += target_widths.data[i]
 
             hyp_output.append((metadata['utt-ids'][i], hyp_transcriptions[i],metadata['font_family'][i]))
-            #print("H:",tu.uxxxx_to_utf8(hyp_transcriptions[i]))
+            print("H:",tu.uxxxx_to_utf8(hyp_transcriptions[i]))
             if have_lm:
                 hyp_lm_output.append((metadata['utt-ids'][i], hyp_transcriptions_lm[i]))
             
@@ -156,7 +162,7 @@ def main():
     with open(hyp_out_file, 'w') as fh:
         for uttid, hyp, font_family in hyp_output:
             #fh.write("%s (%s)\n" % (hyp, uttid))
-            newid = uttid
+            newid = font_family + "-" + uttid
             fh.write("%s (%s) \n" % (hyp, newid))
 
 
@@ -182,7 +188,7 @@ def main():
     with open(ref_out_file, 'w') as fh:
         for uttid, ref, font_family in ref_output:
             #fh.write("%s (%s)\n" % (ref, uttid))
-            newid = uttid
+            newid = font_family + "-" + uttid
             fh.write("%s (%s)\n" % (ref, newid))
 
 if __name__ == "__main__":

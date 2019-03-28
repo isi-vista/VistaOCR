@@ -3,15 +3,13 @@ import argparse
 import datetime
 
 import torch
-from models.cnnlstm import CnnOcrModel
+from models.cnn_script_id_lstm import CnnScriptIdLstmModel
 from torch.autograd import Variable
 import imagetransforms
 
-from datautils import GroupedSampler, SortByWidthCollater
-from ocr_dataset import OcrDataset
+from datautils import GroupedSampler, SortByWidthCollater_scriptid_lstm
+from script_id_dataset import ScriptIdDataset
 from textutils import *
-sys.path.insert(0, '/nfs/isicvlnas01/users/jschmidt/FlexOCR/src')
-import textutils as tu
 
 import sys
 
@@ -36,7 +34,7 @@ def get_args():
 def main():
     args = get_args()
 
-    model = CnnOcrModel.FromSavedWeights(args.model_path)
+    model = CnnScriptIdLstmModel.FromSavedWeights(args.model_path)
     model.eval()
 
     line_img_transforms = imagetransforms.Compose([
@@ -53,8 +51,11 @@ def main():
         lm_words = os.path.join(args.lm_path, 'words.txt')
         lm_wfst = os.path.join(args.lm_path, 'TLG.fst')
 
+
     num_input_channel = model.get_hyper_params().get('num_in_channels', 1)
-    test_dataset = OcrDataset(args.datadir, "test", line_img_transforms,numinputchannels=num_input_channel)
+    #test_dataset = ScriptIdDataset(args.datadir, "test", line_img_transforms,numinputchannels=num_input_channel)
+    test_dataset = ScriptIdDataset(args.datadir, "validation", line_img_transforms,numinputchannels=num_input_channel)
+    print(test_dataset)
     # Set seed for consistancy
     torch.manual_seed(7)
     torch.cuda.manual_seed_all(7)
@@ -68,7 +69,7 @@ def main():
                                                   batch_size=args.batch_size,
                                                   num_workers=args.num_data_threads,
                                                   sampler=GroupedSampler(test_dataset, rand=False),
-                                                  collate_fn=SortByWidthCollater,
+                                                  collate_fn=SortByWidthCollater_scriptid_lstm,
                                                   pin_memory=True,
                                                   drop_last=False)
 
@@ -78,59 +79,64 @@ def main():
     ref_output = []
     font_hyp_output = []
     font_ref_output = []
-    unusualfontpath = "/nas/home/jschmidt/unusualfonts.txt"
+    unusualfontpath = "/nas/home/jschmidt/SynthText/data/fonts/unusualfonts.txt"
     unusualfonts = [line.strip().lower() for line in open(unusualfontpath)]
+    print(unusualfonts)
+    #print(unusualfonts)
     print("About to process test set. Total # iterations is %d." % len(test_dataloader))
 
-    for idx, (input_tensor, target, input_widths, target_widths, metadata) in enumerate(test_dataloader):
+    for input_tensor, target, input_widths, metadata in test_dataloader:
+        
+        print(input_tensor.size())
         sys.stdout.write(".")
         sys.stdout.flush()
         #print("Target: ",target)
         #print("Metadata: ", metadata)
         # Wrap inputs in PyTorch Variable class
-        #print("Target:",target)
         input_tensor = Variable(input_tensor.cuda(async=True), volatile=True)
+        input_widths = Variable(input_widths)
         target = Variable(target, volatile=True)
-        target_widths = Variable(target_widths, volatile=True)
-        input_widths = Variable(input_widths, volatile=True)
-
         # Call model
-        model_output, model_output_actual_lengths = model(input_tensor, input_widths)
+        #model_output, model_output_actual_lengths = model(input_tensor, input_widths)
+        print("Input tensor", input_tensor.size())
+        model_output,actual_widths = model(input_tensor,input_widths)
+        #print(model_output)
         # Do LM-free decoding
-        hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=True)
-  
+        #hyp_transcriptions = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=True)
         # Optionally, do LM decoding
-        if have_lm:
-            hyp_transcriptions_lm = model.decode_with_lm(model_output, model_output_actual_lengths, uxxxx=True)
-
-
-
         cur_target_offset = 0
         target_np = target.data.numpy()
-
-        for i in range(len(hyp_transcriptions)):
+        prob_output = torch.nn.functional.softmax(model_output,2)
+        for i in range(0,target.size(0)):
             ref_transcription = metadata['trans_raw'][i]
-            #print("T:", tu.uxxxx_to_utf8(ref_transcription))
+            label = metadata['label'][i]
+            #print("label",label)
+            prob_rus = prob_output.data[actual_widths[i]-1,i,0]
+            if(prob_rus > 0.5):
+                hyp = 0
+            else:
+                hyp = 1
+            #print("R1: ", ref_transcription)
             #ref_transcription = form_target_transcription(
              #  target_np[cur_target_offset:(cur_target_offset + target_widths.data[i])], model.alphabet)
              #   target_np[cur_target_offset:(cur_target_offset + target_widths.data[i])], test_dataset.alphabet)
+             
+            print("H: ", hyp, "  R: ", label)
 
-            cur_target_offset += target_widths.data[i]
+            #cur_target_offset += target_widths.data[i]
 
-            hyp_output.append((metadata['utt-ids'][i], hyp_transcriptions[i],metadata['font_family'][i]))
-            #print("H:",tu.uxxxx_to_utf8(hyp_transcriptions[i]))
-            if have_lm:
-                hyp_lm_output.append((metadata['utt-ids'][i], hyp_transcriptions_lm[i]))
-            
-            ref_output.append((metadata['utt-ids'][i], ref_transcription,metadata['font_family'][i]))
+            hyp_output.append((metadata['utt-ids'][i], hyp,metadata['font_family'][i]))
+
+            ref_output.append((metadata['utt-ids'][i], label,metadata['font_family'][i]))
             font_family = metadata['font_family'][i].strip().lower()
+            #print("Font:",font_family)
             if(font_family in unusualfonts):
                 font_type = "Unusual"
             else:
                 font_type = "Standard"
             font_type_id = font_type + "-" + metadata['utt-ids'][i]
-            font_hyp_output.append((font_type_id, hyp_transcriptions[i]))
-            font_ref_output.append((font_type_id, ref_transcription))
+            font_hyp_output.append((font_type_id, hyp))
+            font_ref_output.append((font_type_id, label))
 
 
 
@@ -156,7 +162,7 @@ def main():
     with open(hyp_out_file, 'w') as fh:
         for uttid, hyp, font_family in hyp_output:
             #fh.write("%s (%s)\n" % (hyp, uttid))
-            newid = uttid
+            newid = font_family + "-" + uttid
             fh.write("%s (%s) \n" % (hyp, newid))
 
 
@@ -182,7 +188,7 @@ def main():
     with open(ref_out_file, 'w') as fh:
         for uttid, ref, font_family in ref_output:
             #fh.write("%s (%s)\n" % (ref, uttid))
-            newid = uttid
+            newid = font_family + "-" + uttid
             fh.write("%s (%s)\n" % (ref, newid))
 
 if __name__ == "__main__":

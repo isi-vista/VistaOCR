@@ -156,6 +156,7 @@ def main():
 
     line_img_transforms = imagetransforms.Compose([
         augment.ImageAug(),
+        imagetransforms.WarpImage(),
         imagetransforms.Scale(new_h=args.line_height),
         imagetransforms.InvertBlackWhite(),
         imagetransforms.ToTensor(),
@@ -183,8 +184,8 @@ def main():
 
     train_dataloader = DataLoader(train_dataset, args.batch_size, num_workers=4, sampler=GroupedSampler(train_dataset, rand=True),
                                   collate_fn=SortByWidthCollater, pin_memory=True, drop_last=True)
-    print(args.batch_size)
-    validation_dataloader = DataLoader(validation_dataset, int(args.batch_size/2), num_workers=0,sampler=GroupedSampler(validation_dataset, rand=False),
+
+    validation_dataloader = DataLoader(validation_dataset, args.batch_size, num_workers=0,sampler=GroupedSampler(validation_dataset, rand=False),
                                        collate_fn=SortByWidthCollater, pin_memory=False, drop_last=False)
 
 

@@ -10,44 +10,21 @@ import torch
 logger = logging.getLogger('root')
 
 from torch.utils.data import Dataset
-from alphabet import Alphabet
 
-def merge_alphabet(alphabet1,alphabet2):
-    #Merge two alphabets together, using alphabet 2 as the base
-    alphabet = alphabet2
-    for char in alphabet1.char_to_idx.keys():
-        if  not (char in alphabet.char_to_idx.keys()):
-            idnum = len(alphabet.char_to_idx)
-            alphabet.char_to_idx[char]=idnum
-            alphabet.idx_to_char[idnum]=char
-            print(idnum,char)
-    return alphabet
-
-class OcrDataset(Dataset):
-    def __init__(self, data_dir, split, transforms, alphabet=None,numinputchannels=3):
-        logger.info("Loading OCR Dataset: [%s] split from [%s]." % (split, data_dir))
+class ScriptIdDataset(Dataset):
+    def __init__(self, data_dir, split, transforms,numinputchannels=3):
+        logger.info("Loading ScriptID Dataset: [%s] split from [%s]." % (split, data_dir))
         self.num_input_channels = numinputchannels
         self.data_dir = data_dir
         self.split = split
         self.preprocess = transforms
 
+        self.script_to_label = {'cyrillic': 0,
+                                'latin': 1}
         # Read Dataset Description
+        print("File path ",  os.path.join(data_dir, 'desc.json'))
         with open(os.path.join(data_dir, 'desc.json'), 'r') as fh:
             self.data_desc = json.load(fh)
-
-
-        # Init alphabet
-        #logger.info("Initializing alphabet")
-        #self.init_alphabet()
-        #inferred_alphabet = self.alphabet
-        #print("Inferred alphabet: ", type(inferred_alphabet))
-        if alphabet is not None:
-            logger.info("Explicitly providing alphabet via initializatin parameter, as opposed to inferring from data")
-            self.alphabet = alphabet
-        else:
-            logger.info("Initializing alphabet")
-            self.init_alphabet()
-
         # Read LMDB image database
         self.lmdb_env = lmdb.Environment(os.path.join(data_dir, 'line-images.lmdb'), map_size=1e12, readonly=True)
         self.lmdb_txn = self.lmdb_env.begin(buffers=True)
@@ -75,14 +52,8 @@ class OcrDataset(Dataset):
             self.size_groups[cur_limit] = []
             self.size_groups_dict[cur_limit] = dict()
 
-        self.writer_id_map = dict()
 
         for idx, entry in enumerate(self.data_desc[self.split]):
-            # First handle writer id
-            if 'writer' in entry:
-                if not entry['writer'] in self.writer_id_map:
-                    self.writer_id_map[entry['writer']] = len(self.writer_id_map)
-
             # Now figure out which size-group it belongs in
             for cur_limit in self.size_group_limits:
                 if ('height' in entry) and ('width' in entry):
@@ -93,28 +64,13 @@ class OcrDataset(Dataset):
                     normalized_width = entry['width']
                 else:
                     raise Exception("Json entry must list width & height of image.")
-                if(normalized_width < 10):
-                    continue
+
                 if normalized_width < cur_limit:
                     self.size_groups[cur_limit].append(idx)
                     self.size_groups_dict[cur_limit][idx] = 1
                     break
 
         logger.info("Done.")
-
-
-    def init_alphabet(self):
-        # Read entire train/val/test data to deterimine set of unique characters we should have in alphabet
-        unique_chars = set()
-
-        for split in ['train', 'validation', 'test']:
-            for entry in self.data_desc[split]:
-                for char in entry['trans'].split():
-                    unique_chars.add(char)
-
-
-        # Now add CTC blank as first letter in alphabet. Also sort alphabet lexigraphically for convinience
-        self.alphabet = Alphabet(['<ctc-blank>', *sorted(unique_chars)])
 
     def determine_width_cutoffs(self):
 
@@ -157,8 +113,6 @@ class OcrDataset(Dataset):
 
         img_bytes = np.asarray(self.lmdb_txn.get(entry['id'].encode('ascii')), dtype=np.uint8)
         line_image = cv2.imdecode(img_bytes, -1)
-        if len(line_image.shape) == 3 and line_image.shape[2] == 4:
-            line_image = cv2.cvtColor(line_image, cv2.COLOR_BGRA2BGR)
         if(self.num_input_channels == 3 and len(line_image.shape)==2):
             line_image = cv2.cvtColor(line_image,cv2.COLOR_GRAY2BGR)
         elif(self.num_input_channels == 1 and len(line_image.shape)==3):
@@ -168,6 +122,7 @@ class OcrDataset(Dataset):
 
         # Add padding up to max-width, so that we have consistent size for cudnn.benchmark to work with
         original_width = line_image.size(2)
+
         if max_width < self.size_group_limits[-1]:
             torch.backends.cudnn.benchmark = True
             line_image_padded = torch.zeros(line_image.size(0), line_image.size(1), max_width)
@@ -178,24 +133,22 @@ class OcrDataset(Dataset):
             torch.backends.cudnn.benchmark = False
             line_image_padded = line_image
 
-        transcription = []
-        for char in entry['trans'].split(" "):
-            transcription.append(self.alphabet.char_to_idx[char])
 
+        label = self.script_to_label[entry['alphabet']]
         metadata = {
+            'label': label,
             'trans_raw': entry['trans'],
             'utt-id': entry['id'],
             'width': original_width,
             'trans_utf8': entry['utf8_transcript'],
             'font': entry['font'],
-            'font_family': entry['fontfamily']
+            'font_family': entry['fontfamily'],
+            'alphabet': entry['alphabet']
         }
-        #print(metadata)
         if 'writer' in entry:
             metadata['writer-id'] = self.writer_id_map[entry['writer']]
 
-
-        return line_image_padded, transcription, metadata
+        return line_image_padded, label, metadata
 
     def __len__(self):
         return len(self.data_desc[self.split])

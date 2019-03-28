@@ -6,6 +6,7 @@ import numbers
 import types
 import collections
 import cv2
+import uuid
 from scipy.interpolate import griddata
 
 
@@ -41,7 +42,6 @@ class PickOne(object):
 
     def __call__(self, img):
         idx = np.random.choice(len(self.transforms))
-        #print("Calling augmentation of type: %s" % str(type(self.transforms[idx])))
         return self.transforms[idx](img)
 
 class PickRandomParameters(object):
@@ -62,92 +62,10 @@ class Randomize(object):
 
     def __call__(self, img):
         if torch.bernoulli(torch.Tensor([self.prob]))[0] == 1:
-            #print("Calling augmentation of type: %s" % str(type(self.transform)))
             return self.transform(img)
         else:
             return img
 
-
-class RotateRandom(object):
-    def __init__(self, from_angle, to_angle):
-        self.from_angle = from_angle
-        self.to_angle = to_angle
-
-        self.rand_sampler = torch.distributions.uniform.Uniform(self.from_angle, self.to_angle)
-
-    def __call__(self, img):
-        angle = self.rand_sampler.sample().item()
-
-        rows,cols = img.shape[:2]
-        M = cv2.getRotationMatrix2D((cols/2,rows/2),angle=angle,scale=1)
-        return cv2.warpAffine(img,M,(cols,rows), borderMode=cv2.BORDER_REPLICATE)
-
-class TessBlockConv(object):
-    def __init__(self, kernel_val=1, bias_val=1, rand=False):
-
-        self.rand = rand
-
-        with torch.no_grad():
-            self.conv_3ch = torch.nn.Conv2d(3, 3, kernel_size=2, padding=1, groups=3)
-            self.conv_1ch = torch.nn.Conv2d(1, 1, kernel_size=2, padding=1)
-
-            if rand:
-                torch.nn.init.normal_(self.conv_3ch.weight, 0, 1)
-                torch.nn.init.normal_(self.conv_3ch.bias, 0, 1)
-                torch.nn.init.normal_(self.conv_1ch.weight, 0, 1)
-                torch.nn.init.normal_(self.conv_1ch.bias, 0, 1)
-            else:
-                self.conv_3ch.weight.fill_(kernel_val)
-                self.conv_3ch.bias.fill_(bias_val)
-                self.conv_1ch.weight.fill_(kernel_val)
-                self.conv_1ch.bias.fill_(bias_val)
-
-    def __call__(self, img):
-        # If random, want to reset weights each time
-        if self.rand:
-            with torch.no_grad():
-                torch.nn.init.normal_(self.conv_3ch.weight, 0, 1)
-                torch.nn.init.normal_(self.conv_3ch.bias, 0, 1)
-                torch.nn.init.normal_(self.conv_1ch.weight, 0, 1)
-                torch.nn.init.normal_(self.conv_1ch.bias, 0, 1)
-
-        if len(img.shape) == 2:
-            # Convert numpy image into torch Tensor to pass through conv layer
-            img_tensor = torch.from_numpy(img).float()
-            # add batch dimension & channel dimension
-            img_tensor.unsqueeze_(0)
-            img_tensor.unsqueeze_(0)
-
-            # Now pass through conv layer
-            img_tensor = self.conv_1ch(img_tensor)
-
-            # Convert back to numpy and rescale
-            img_out = img_tensor.squeeze().detach().numpy()
-            img_max = np.max(img_out)
-            img_min = np.min(img_out)
-            img_out = 255 * (img_out - img_min) / (img_max - img_min)
-            img_out = img_out.astype(np.uint8)
-
-        else:
-            # Convert numpy image into torch Tensor to pass through conv layer
-            img_tensor = torch.from_numpy(img.transpose((2,0,1))).float()
-            # add batch dimension
-            img_tensor.unsqueeze_(0)
-
-            # Now pass through conv layer
-            img_tensor = self.conv_3ch(img_tensor)
-
-            # Convert back to numpy and rescale
-            img_out = img_tensor.squeeze().detach().numpy()
-            img_out = img_out.transpose(1,2,0)
-            img_max = np.max(img_out)
-            img_min = np.min(img_out)
-            img_out = 255 * (img_out - img_min) / (img_max - img_min)
-            img_out = img_out.astype(np.uint8)
-
-        # Now we can finally return
-        return img_out
-        
 
 class MorphErode(object):
     def __init__(self, k):
@@ -182,31 +100,16 @@ class UniformNoise(object):
     def __call__(self, img):
         mask = torch.Tensor(img.shape[0],img.shape[1]).fill_(self.p)
         mask = torch.bernoulli(mask).numpy()
-        cpy = img.copy().astype(np.int16)
+        cpy = img.copy()
 
         noise_mean = 0
-        if len(img.shape) == 3:
-            noise_std = torch.Tensor(img.shape[0],img.shape[1], img.shape[2]).fill_(self.noise_std_)
-        else:
-            noise_std = torch.Tensor(img.shape[0],img.shape[1]).fill_(self.noise_std_)
-        noise = torch.normal(noise_mean, noise_std).numpy().astype(np.int8)
+        noise_std = torch.Tensor(img.shape[0],img.shape[1]).fill_(self.noise_std_)
+        noise = torch.normal(noise_mean, noise_std).numpy().astype(np.uint8)
 
         cpy[ mask == 1 ] += noise[ mask == 1 ]
         cpy = np.clip(cpy, a_min=0, a_max=255)
-        cpy = cpy.astype(np.uint8)
 
         return cpy
-
-
-class DegradeDownsample(object):
-    def __init__(self, ds_factor):
-        self.ds_factor = ds_factor
-
-    def __call__(self, img):
-        orig_size = (img.shape[1], img.shape[0])
-        downsampled_img = cv2.resize(img, dsize=(0,0), fx=self.ds_factor, fy=self.ds_factor)
-        return cv2.resize(downsampled_img, dsize=orig_size)
-
 
 class UniformDelete(object):
     def __init__(self, p_apply):
@@ -255,10 +158,10 @@ _WARP_INTERPOLATION = {
 class WarpImage(object):
     def __init__(self, **kwargs):
         self.w_mesh_interval = kwargs.get('w_mesh_interval', 25)
-        self.w_mesh_std = kwargs.get('w_mesh_std', 3.0)
+        self.w_mesh_std = kwargs.get('w_mesh_std', 3)
 
         self.h_mesh_interval = kwargs.get('h_mesh_interval', 25)
-        self.h_mesh_std = kwargs.get('h_mesh_std', 3.0)
+        self.h_mesh_std = kwargs.get('h_mesh_std', 3)
 
         self.interpolation_method = kwargs.get('interpolation', 'linear')
         self.fit_interval_to_image = kwargs.get("fit_interval_to_image", True)
@@ -301,7 +204,9 @@ class WarpImage(object):
         map_x = grid_z[:,:,1]
         map_y = grid_z[:,:,0]
         warped = cv2.remap(img, map_x, map_y, _WARP_INTERPOLATION[self.interpolation_method], borderValue=(255,255,255))
-
+        uid = uuid.uuid4().hex
+        #print(self.h_mesh_std)
+        #cv2.imwrite("/nas/home/jschmidt/testing/morewarped/" + uid + ".jpg",warped)
         return warped
 
 
@@ -376,49 +281,15 @@ class WarpImageLocal(object):
             warped_local = cv2.remap(img, map_x, map_y, _WARP_INTERPOLATION[self.interpolation_method], borderValue=(255,255,255))
             
             warped[:,local_start:local_end] = warped_local[:, :warped[:,local_start:local_end].shape[1]]
-
+            uid = uuid.uuid4().hex
+            #print("Something is happening locally")
+            #cv2.imwrite("/nas/home/jschmidt/testing/local/" + uid + ".jpg",warped)
         return warped
 
 
 class InvertBlackWhite(object):
     def __call__(self, img):
         return -img + 255
-
-
-class AddRandomStripe(object):
-    def __init__(self, val, strip_width_from, strip_width_to):
-        self.val = val
-        self.strip_width_from = strip_width_from
-        self.strip_width_to = strip_width_to
-        self.rand_sampler = torch.distributions.uniform.Uniform(0, 1)
-
-    def __call__(self, img):
-        # Pick a random starting position
-        rand_pct = self.rand_sampler.sample().item()
-        starting_pt = int(rand_pct * img.shape[0])
-
-        # Pick a random strip width
-        strip_width = random.randint(self.strip_width_from, self.strip_width_to)
-
-        ending_pt = min(img.shape[0], starting_pt + strip_width)
-
-        img[starting_pt:ending_pt] = self.val
-        return img
-
-class ConvertGray(object):
-    def __call__(self, img):
-        if len(img.shape) == 3 and img.shape[2] == 3:
-            return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        else:
-            return img
-
-class ConvertColor(object):
-    def __call__(self, img):
-        if len(img.shape) == 3 and img.shape[2] == 3:
-            return img
-        else:
-            return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-
 
 class ToTensor(object):
     """Converts a PIL.Image or numpy.ndarray (H x W x C) in the range
@@ -484,11 +355,6 @@ class Scale(object):
             if self.preserve_apsect_ratio and self.new_w is None:
                 local_new_w = int(w * float(self.new_h/h))
 
-            if local_new_w <= 0 or local_new_h <= 0:
-                print("Warning!! local_new_h = %d, local_new_w = %d; orig h = %d, orig w = %d" % (local_new_h, local_new_w, h, w))
-                # let's fallback to have a non-zero width; this will give junk results but at least not crash
-                local_new_w = 1
-
             return cv2.resize(img, (local_new_w, local_new_h), self.interpolation)
 
         # Next, fall back to old tuple API
@@ -553,58 +419,6 @@ class Lambda(object):
         return self.lambd(img)
 
 
-class Identity(object):
-    def __call__(self, img):
-        return img
-
-class PadRandom(object):
-    def __init__(self, pxl_max_horizontal, pxl_max_vertical):
-        self.pxl_max_horizontal = pxl_max_horizontal
-        self.pxl_max_vertical = pxl_max_vertical
-        self.rand_sampler_horizontal = torch.distributions.uniform.Uniform(0, self.pxl_max_horizontal)
-        self.rand_sampler_vertical = torch.distributions.uniform.Uniform(0, self.pxl_max_vertical)
-
-    def __call__(self, img):
-        w = img.shape[1]
-        pxls_to_add_horizontal_left = int(self.rand_sampler_horizontal.sample().item())
-        pxls_to_add_horizontal_right = int(self.rand_sampler_horizontal.sample().item())
-        pxls_to_add_vertical_top = int(self.rand_sampler_vertical.sample().item())
-        pxls_to_add_vertical_bottom = int(self.rand_sampler_vertical.sample().item())
-
-        return cv2.copyMakeBorder(img, top=pxls_to_add_vertical_top, bottom=pxls_to_add_vertical_bottom, left=pxls_to_add_horizontal_left, right=pxls_to_add_horizontal_right, borderType=cv2.BORDER_REPLICATE)
-
-
-class CropHorizontal(object):
-    def __init__(self, pct):
-        self.pct = pct
-        self.rand_sampler = torch.distributions.uniform.Uniform(0, self.pct)
-
-    def __call__(self, img):
-        w = img.shape[1]
-        pct = self.rand_sampler.sample().item()
-        chopped_pixels = int(w*pct)
-
-        if chopped_pixels == 0:
-            return img
-        else:
-            return img[:, chopped_pixels:-chopped_pixels].copy()
-
-class CropVertical(object):
-    def __init__(self, pct):
-        self.pct = pct
-        self.rand_sampler = torch.distributions.uniform.Uniform(0, self.pct)
-
-    def __call__(self, img):
-        h = img.shape[0]
-        pct = self.rand_sampler.sample().item()
-        chopped_pixels = int(h*pct)
-
-        if chopped_pixels == 0:
-            return img
-        else:
-            return img[chopped_pixels:-chopped_pixels].copy()
-
-
 class RandomCrop(object):
     """Crops the given opencv image at a random location to have a region of
     the given size. size can be a tuple (target_height, target_width)
@@ -642,12 +456,6 @@ class RandomHorizontalFlip(object):
             #return img.transpose(Image.FLIP_LEFT_RIGHT)
         return img
 
-class HorizontalFlip(object):
-    """Randomly horizontally flips the given opencv image with a probability of 0.5
-    """
-
-    def __call__(self, img):
-        return cv2.flip(img, flipCode=1)
 
 class RandomSizedCrop(object):
     """Random crop the given opencv image to a random size of (0.08 to 1.0) of the original size

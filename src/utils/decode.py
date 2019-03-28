@@ -26,7 +26,7 @@ from textutils import *
 import cv2
 
 def load_model(fpath, fdim=128, hu=256, gpu=False):
-
+    print("Model is being loaded")
     mweights = torch.load(fpath)
 
     # For now hardcode these params
@@ -34,18 +34,18 @@ def load_model(fpath, fdim=128, hu=256, gpu=False):
     line_height = 30
     h_pad = 0
     v_pad = 0
-
+    
     alphabet = EnglishAlphabet()
     #alphabet = ArabicAlphabet()
 
     model = CnnOcrModel(
-        num_in_channels = 1,
+        num_in_channels = 3,
         input_line_height = line_height + 2*v_pad,
         lstm_input_dim = fdim,
         num_lstm_layers = 3,
         num_lstm_hidden_units = hu,
         p_lstm_dropout = 0.5,
-        alphabet = alphabet,
+        #alphabet = alphabet,
         multigpu = True,
         verbose = False,
         gpu=gpu)
@@ -112,8 +112,27 @@ def get_random_madcat_test_sample(lh=30):
     
 def decode_single_sample(model, input_tensor, uxxxx=False):
     # Add a batch dimension
+    torch.manual_seed(7)
+    torch.cuda.manual_seed_all(7)
     model_input = input_tensor.view(1, input_tensor.size(0), input_tensor.size(1), input_tensor.size(2))
     input_widths = torch.autograd.Variable(torch.IntTensor( [model_input.size(3)] ))
+    # Move to GPU if using cuda
+    if torch.cuda.is_available() and model.gpu:
+        model_input = model_input.cuda()
+
+    # Wrap in a Torch Variable instance, because model expects that
+    model_input = torch.autograd.Variable(model_input)
+    model_output, model_output_actual_lengths = model(model_input, input_widths)
+
+    hyp = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=uxxxx)
+
+    return model_output, hyp[0]
+
+
+def classify_single_sample(model, input_tensor):
+    # Add a batch dimension
+    model_input = input_tensor.view(1, input_tensor.size(0), input_tensor.size(1), input_tensor.size(2))
+    #input_widths = torch.autograd.Variable(torch.IntTensor( [model_input.size(3)] ))
 
     # Move to GPU if using cuda
     if torch.cuda.is_available() and model.gpu:
@@ -121,12 +140,55 @@ def decode_single_sample(model, input_tensor, uxxxx=False):
 
     # Wrap in a Torch Variable instance, because model expects that
     model_input = torch.autograd.Variable(model_input)
+    model_output = model(model_input)
+    #print("Non LSTM model output", model_output.size())
+    prob_output = torch.nn.functional.softmax(model_output,1)
+    prob_russian = prob_output.data[0,0]
+    #print("Prob Russian: ", prob_russian)
+    if(prob_russian > 0.5):
+        label = 0
+    else:
+        label = 1
+    #print("maxindex",maxindex)
 
-    model_output, model_output_actual_lengths = model(model_input, input_widths)
+    return model_output, label
+def classify_single_sample_lstm(model, input_tensor):
+    # Add a batch dimension
+    #print(input_tensor.size())
+    input_tensor = Variable(input_tensor.cuda(async=True), volatile=True)
 
-    hyp = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=uxxxx)
+    model_input = input_tensor.view(1, input_tensor.size(0), input_tensor.size(1), input_tensor.size(2))
 
-    return model_output, hyp[0]
+    #print(model_input.size())
+    #print(model_input.size(3))
+    input_widths = torch.autograd.Variable(torch.IntTensor( [model_input.size(3)] ))
+    # Move to GPU if using cuda
+    if torch.cuda.is_available() and model.gpu:
+        model_input = model_input.cuda()
+    # Wrap in a Torch Variable instance, because model expects that
+    #model_input = torch.autograd.Variable(model_input)
+    #print("Model input", model_input.size())
+    model_output, actual_lengths = model(model_input, input_widths)
+    prob_output = torch.nn.functional.softmax(model_output,2)
+    #print("LSTM model size:",model_output.size())
+    #print("Actual lengths: ", actual_lengths)
+    #for i in range(0,220):
+    #    print("Output:",prob_output.data[i,0,0])
+    #print("model output:",prob_output.data[0,0,0])
+    #print("model output:",prob_output.data[0,0,1])
+    #print("prob:",prob_output.size())
+    #print("Prob_output size: ", prob_output.size())
+    prob_russian = prob_output.data[actual_lengths[0]-1,0,0]
+    prob_english = prob_output.data[-1,0,1]
+    #print("Prob Russian: ", prob_russian, "Prob_english:", prob_english)
+    if(prob_russian > 0.5):
+        label = 0
+    else:
+        label = 1
+    #print("maxindex",maxindex)
+
+    return model_output, label, prob_russian
+
 
 def decode_single_sample_withlm(model, input_tensor, uxxxx=False):
     # Add a batch dimension
@@ -141,6 +203,7 @@ def decode_single_sample_withlm(model, input_tensor, uxxxx=False):
     model_input = torch.autograd.Variable(model_input)
 
     model_output, model_output_actual_lengths = model(model_input, input_widths)
+
 
     hyp = model.decode_with_lm(model_output, model_output_actual_lengths, uxxxx=uxxxx)
 
@@ -158,7 +221,7 @@ def decode_single_sample_return_hidden(model, input_tensor, gpu=False):
 
     # Wrap in a Torch Variable instance, because model expects that
     model_input = torch.autograd.Variable(model_input)
-
+    
     model_output, model_output_actual_lengths, hidden = model.forward_return_hidden(model_input, input_widths)
 
     hyp = model.decode_without_lm(model_output, model_output_actual_lengths, uxxxx=False)

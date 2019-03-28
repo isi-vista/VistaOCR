@@ -23,7 +23,6 @@ from datautils import GroupedSampler, SortByWidthCollater
 from models.cnnlstm import CnnOcrModel
 from textutils import *
 import argparse
-import augment
 
 
 from lr_scheduler import ReduceLROnPlateau
@@ -102,14 +101,12 @@ def test_on_val(val_dataloader, model, criterion):
 
 def train(batch, model, criterion, optimizer):
     input_tensor, target, input_widths, target_widths, metadata = batch
-    #print("Input widths",input_widths)
     input_tensor = Variable(input_tensor.cuda(async=True))
     target = Variable(target)
     target_widths = Variable(target_widths)
     input_widths = Variable(input_widths)
     optimizer.zero_grad()
     model_output, model_output_actual_lengths = model(input_tensor, input_widths)
-    #print("Model lengths:", model_output_actual_lengths)
     loss = criterion(model_output, target, model_output_actual_lengths, target_widths)
     loss.backward()
     
@@ -155,7 +152,6 @@ def main():
 
 
     line_img_transforms = imagetransforms.Compose([
-        augment.ImageAug(),
         imagetransforms.Scale(new_h=args.line_height),
         imagetransforms.InvertBlackWhite(),
         imagetransforms.ToTensor(),
@@ -183,8 +179,8 @@ def main():
 
     train_dataloader = DataLoader(train_dataset, args.batch_size, num_workers=4, sampler=GroupedSampler(train_dataset, rand=True),
                                   collate_fn=SortByWidthCollater, pin_memory=True, drop_last=True)
-    print(args.batch_size)
-    validation_dataloader = DataLoader(validation_dataset, int(args.batch_size/2), num_workers=0,sampler=GroupedSampler(validation_dataset, rand=False),
+
+    validation_dataloader = DataLoader(validation_dataset, args.batch_size, num_workers=0,sampler=GroupedSampler(validation_dataset, rand=False),
                                        collate_fn=SortByWidthCollater, pin_memory=False, drop_last=False)
 
 

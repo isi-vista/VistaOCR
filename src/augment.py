@@ -79,6 +79,7 @@ class ImageAug(object):
 
 
     def __call__(self, img):
+        #print(type(img))
         images_aug = self.seq.augment_image(img)
         return images_aug
     
