@@ -1,28 +1,16 @@
-#!/bin/env python
-
-import sys
-import codecs
-import h5py as h5
+import os
 import argparse
-import numpy as np
-import matplotlib.pyplot as plt
+import datetime
+
 import cv2
+import torch
 import math
 from PIL import Image
-import sys
-import diagonal_crop
-import json
-import lmdb
-import os
-import textutils as tu
-import imagetransforms
 from models.cnnlstm import CnnOcrModel
-from models.cnn_script_id_mean import CnnScriptIdModelMean
-from models.cnn_script_id_max import CnnScriptIdModelMax
-from models.cnn_script_id_lstm import CnnScriptIdLstmModel
+from torch.autograd import Variable
+import diagonal_crop
+import numpy as np
 import utils.decode as dec
-import torch
-import random
 
 def calculateDistance(p1,p2):
      dist = math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
@@ -30,17 +18,19 @@ def calculateDistance(p1,p2):
 
 def main(argv=None):
     if argv is None:
-          argv = sys.argv[1:]
+        argv = sys.argv[1:]
 
-    parser = argparse.ArgumentParser(description='Run OCR for multiple images in a folder')
+    parser = argparse.ArgumentParser(description='Run OCR with LM for multiple videos in a folder')
     parser.add_argument('-i', '--video-dir', dest='videodir',
                       help="The input video dir")
     parser.add_argument('-v', '--video-list', dest='videolistfile',
                       help="The input video list file")
     parser.add_argument('-b', '--box-dir', dest='boxdir',
                       help="The box dir from text detection")
-    parser.add_argument('-m', '--model-path', dest='cmodelpath',
+    parser.add_argument('-m', '--model-path', dest='model_path',
                       help="The ocr model path")
+    parser.add_argument('-l', '--lm-path', dest='lm_path',
+                      help="The LM model path")
     parser.add_argument('-o', '--output-dir', dest='outputdir',
                       help="The output ocr dir")
     args = parser.parse_args()
@@ -51,7 +41,15 @@ def main(argv=None):
     cmodelpath = args.cmodelpath
     outputdir = args.outputdir
 
-    cmodel = CnnOcrModel.FromSavedWeights(cmodelpath)
+    # Load models
+    cmodel = CnnOcrModel.FromSavedWeights(args.model_path)
+
+    have_lm = (args.lm_path is not None) and (args.lm_path != "")
+    if have_lm:
+        lm_units = os.path.join(args.lm_path, 'units.txt')
+        lm_words = os.path.join(args.lm_path, 'words.txt')
+        lm_wfst = os.path.join(args.lm_path, 'TLG.fst')
+        model.init_lm(lm_wfst, lm_words, lm_units, acoustic_weight=0.8)
 
     line_height = cmodel.input_line_height
 
@@ -121,7 +119,10 @@ def main(argv=None):
                   imageerrorlist.append(videoname + '-' + framenum)
              if(csuccess == True):
                   try:
-                       cmodel_output, cmodel_hyp = dec.decode_single_sample(cmodel,img_tensor)
+                       if have_lm:
+                            cmodel_output, cmodel_hyp = dec.decode_single_sample_withlm(cmodel,img_tensor)
+                       else:
+                            cmodel_output, cmodel_hyp = dec.decode_single_sample(cmodel,img_tensor)
                        csuccess = True
                   except:
                        csuccess = False
@@ -136,6 +137,7 @@ def main(argv=None):
 
     print(errorlist)
     print("EXITED SUCCESSFULLY")
+
 
 if __name__ == '__main__':
     main()
