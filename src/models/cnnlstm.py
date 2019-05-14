@@ -274,9 +274,9 @@ class CnnOcrModel(nn.Module):
         # Only pull in if needed
         acoustic_weight=1.0
         print("INIT LM")
-        script_path = os.path.dirname(os.path.realpath(__file__))
+        #script_path = os.path.dirname(os.path.realpath(__file__))
         print("Acoustic weight: ",acoustic_weight)
-        sys.path.append(script_path + "/../eesen")
+        #sys.path.append(script_path + "/../eesen")
         import eesen
         self.acoustic_weight = acoustic_weight
         self.lattice_decoder = eesen.LatticeDecoder(lm_file, word_sym_file, acoustic_weight, max_active, beam,

@@ -1,4 +1,5 @@
-import os
+#!/bin/env python
+import sys, os
 import argparse
 import datetime
 
@@ -38,7 +39,7 @@ def main(argv=None):
     videolistfile = args.videolistfile
     videodir = args.videodir
     boxdir = args.boxdir
-    cmodelpath = args.cmodelpath
+    cmodelpath = args.model_path
     outputdir = args.outputdir
 
     # Load models
@@ -49,7 +50,7 @@ def main(argv=None):
         lm_units = os.path.join(args.lm_path, 'units.txt')
         lm_words = os.path.join(args.lm_path, 'words.txt')
         lm_wfst = os.path.join(args.lm_path, 'TLG.fst')
-        model.init_lm(lm_wfst, lm_words, lm_units, acoustic_weight=0.8)
+        cmodel.init_lm(lm_wfst, lm_words, lm_units, acoustic_weight=0.8)
 
     line_height = cmodel.input_line_height
 
