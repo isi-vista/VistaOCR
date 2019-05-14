@@ -36,10 +36,11 @@ def main(argv=None):
                       help="The box dir from text detection")
     parser.add_argument('-m', '--model-path', dest='cmodelpath',
                       help="The ocr model path")
+    parser.add_argument('-l', '--lm-path', dest='lm_path',
+                      help="The LM model path")
     parser.add_argument('-o', '--output-dir', dest='outputdir',
                       help="The output ocr dir")
     args = parser.parse_args()
-
 
     boxdir = args.boxdir
     imagedir = args.imagedir
@@ -48,6 +49,14 @@ def main(argv=None):
 
     cmodel = CnnOcrModel.FromSavedWeights(cmodelpath)
     line_height = cmodel.input_line_height
+
+    # Load LM
+    have_lm = (args.lm_path is not None) and (args.lm_path != "")
+    if have_lm:
+        lm_units = os.path.join(args.lm_path, 'units.txt')
+        lm_words = os.path.join(args.lm_path, 'words.txt')
+        lm_wfst = os.path.join(args.lm_path, 'TLG.fst')
+        cmodel.init_lm(lm_wfst, lm_words, lm_units, acoustic_weight=0.8)
 
     errorlist = []
     for file in os.listdir(imagedir):
@@ -93,7 +102,10 @@ def main(argv=None):
              img_tensor = img_tensor.permute(2, 0, 1).contiguous()
              img_np = img_tensor.numpy()
              try:
-                  cmodel_output, cmodel_hyp = dec.decode_single_sample(cmodel,img_tensor)
+                  if have_lm:
+                        cmodel_output, cmodel_hyp = dec.decode_single_sample_withlm(cmodel,img_tensor)
+                  else:
+                        cmodel_output, cmodel_hyp = dec.decode_single_sample(cmodel,img_tensor)
                   csuccess = True
              except:
                   csuccess = False
