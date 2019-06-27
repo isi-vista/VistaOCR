@@ -95,9 +95,9 @@ def main(argv=None):
              img = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
              height,width,channels = img.shape
              new_width = int(width * (line_height/height))
-             img = cv2.resize(img, (new_width,line_height))
              if new_width < line_height:
                  continue
+             img = cv2.resize(img, (new_width,line_height))
              img_tensor = torch.Tensor(img)
              img_tensor = img_tensor.permute(2, 0, 1).contiguous()
              img_np = img_tensor.numpy()
